@@ -13,7 +13,11 @@ kubectl apply -f ./odahu.templates.yaml
 ```
 
 ### ODAHU Credentials
-To access ODAHU API any of Argo ODAHU templates require a secret with the following structure:
+As any ODAHU API clients, Argo tasks must pass through regular authentication procedure with Identity Provider (such as Keycloak). 
+Find more in [Security section](https://docs.odahu.org/gen_security.html) of ODAHU documentation.
+
+It is recommended to create a separate Service Account in Identity Provider for Argo Workflows with minimal required permissions. 
+Credentials for the Service Account have to be put to k8s cluster as a secret with the following structure:
 ```yaml
 apiVersion: v1
 kind: Secret
@@ -25,8 +29,7 @@ data:
   issuer_url: <b64_issuer_url>
 ```
 
-By default ODAHU steps will look for secret named `odahu-credentials`, but it can be customized by 
-`odahuCredentialsSecret` parameter.
+A reference to this k8s Secret must be provided to any ODAHU step in `odahuCredentialsSecret` parameter, or it will default to secret named `odahu-credentials` in the same namespace where Workflow runs.
 
 ## Examples
 
