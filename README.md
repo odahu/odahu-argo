@@ -94,6 +94,6 @@ Outputs:
 | deployment_id | string | ID of created `ModelDeployment` |
 
 ## Examples
-
+1. [Model Training paramterized by input parameters](examples/parametrized-training.workflow.yaml)
 1. [Model Train-Pack-Deploy pipeline with building dynamic Training manifest 
    in a separate Python step](examples/python-manifest-generation.workflow.yaml)
