@@ -1,0 +1,245 @@
+apiVersion: argoproj.io/v1alpha1
+kind: WorkflowTemplate
+metadata:
+  name: odahu
+spec:
+  templates:
+    - name: training
+      inputs:
+        parameters:
+          - name: odahuURL
+          - name: odahuCredentialsSecret
+            default: odahu-credentials
+          - name: wait_completion
+            default: "true"
+        artifacts:
+          - name: trainingManifest
+            path: /odahu/training.yaml
+      outputs:
+        parameters:
+          - name: training_id
+            valueFrom:
+              path: /odahu/training_id.txt
+
+      script:
+        image: odahu/odahu-flow-cli:1.5.0-rc4
+        envFrom:
+          - secretRef:
+              name: odahu-credentials
+        command: ["python"]
+        source: |
+          import os
+          import sys
+          import time
+          from odahuflow.sdk.clients.api_aggregated import parse_resources_file_with_one_item
+          from odahuflow.sdk.clients.training import ModelTrainingClient, TRAINING_SUCCESS_STATE, TRAINING_FAILED_STATE
+
+          str_to_bool = {'true': True, 'false': False}
+
+          wait_completion_str = '{{inputs.parameters.wait_completion}}'
+          if wait_completion_str not in str_to_bool:
+              raise ValueError(f'wait_completion must be one of {list(str_to_bool.keys())}')
+          wait_completion = str_to_bool[wait_completion_str]
+
+          training_manifest_path = '/odahu/training.yaml'
+          manifest = parse_resources_file_with_one_item(training_manifest_path)
+          train_id = manifest.resource_id
+          train = manifest.resource
+
+          print('Found resource:')
+          print(train)
+
+          client = ModelTrainingClient(
+              base_url='{{inputs.parameters.odahuURL}}',
+              client_id=os.getenv('client_id'),
+              client_secret=os.getenv('client_secret'),
+              issuer_url=os.getenv('issuer_url')
+          )
+
+          created_mt = client.create(train)
+          with open('/odahu/training_id.txt', 'w') as f:
+              f.write(created_mt.id)
+
+          if not wait_completion:
+              sys.exit(0)
+
+          while True:
+              running_mt = client.get(created_mt.id)
+              if running_mt.status.state in [TRAINING_SUCCESS_STATE, TRAINING_FAILED_STATE]:
+                  break
+              time.sleep(5)
+
+          if running_mt.status.state != TRAINING_SUCCESS_STATE:
+              raise Exception(f'Expected Model Training {running_mt.id} to be in {TRAINING_SUCCESS_STATE} state')
+
+    - name: packaging
+      inputs:
+        parameters:
+          - name: odahuURL
+          - name: odahuCredentialsSecret
+            default: /api/v1/secrets/odahu-credentials
+          - name: wait_completion
+            default: "true"
+          - name: fromTrainingID
+            default:
+        artifacts:
+          - name: packagingManifest
+            path: /odahu/packaging.yaml
+      outputs:
+        parameters:
+          - name: packaging_id
+            valueFrom:
+              path: /odahu/packaging_id.txt
+      script:
+        image: odahu/odahu-flow-cli:1.5.0-rc4
+        envFrom:
+          - secretRef:
+              name: odahu-credentials
+        command: [ "python" ]
+        source: |
+          import os
+          import sys
+          import time
+          from odahuflow.sdk.clients.api_aggregated import parse_resources_file_with_one_item
+          from odahuflow.sdk.clients.packaging import ModelPackagingClient, SUCCEEDED_STATE, FAILED_STATE
+          from odahuflow.sdk.clients.training import ModelTrainingClient
+
+          str_to_bool = {'true': True, 'false': False}
+
+          wait_completion_str = '{{inputs.parameters.wait_completion}}'
+          if wait_completion_str not in str_to_bool:
+              raise ValueError(f'wait_completion must be one of {list(str_to_bool.keys())}')
+          wait_completion = str_to_bool[wait_completion_str]
+
+          packaging_manifest_path = '/odahu/packaging.yaml'
+          manifest = parse_resources_file_with_one_item(packaging_manifest_path)
+          packaging_id = manifest.resource_id
+          packaging = manifest.resource
+
+          print('Found resource:')
+          print(packaging)
+
+          fromTrainingID = '{{inputs.parameters.fromTrainingID}}'
+          if fromTrainingID:
+              print(f'Fetching artifact name from Model Training {fromTrainingID}')
+              mt_client = ModelTrainingClient(
+                  base_url='{{inputs.parameters.odahuURL}}',
+                  client_id=os.getenv('client_id'),
+                  client_secret=os.getenv('client_secret'),
+                  issuer_url=os.getenv('issuer_url')
+              )
+              mt = mt_client.get(fromTrainingID)
+              packaging.spec.artifact_name = mt.status.artifacts[-1].artifact_name
+              print(f'New articaft name: {packaging.spec.artifact_name}')
+
+          client = ModelPackagingClient(
+              base_url='{{inputs.parameters.odahuURL}}',
+              client_id=os.getenv('client_id'),
+              client_secret=os.getenv('client_secret'),
+              issuer_url=os.getenv('issuer_url')
+          )
+
+          created_mp = client.create(packaging)
+          with open('/odahu/packaging_id.txt', 'w') as f:
+              f.write(created_mp.id)
+
+          if not wait_completion:
+              sys.exit(0)
+
+          while True:
+              running_mp = client.get(created_mp.id)
+              if running_mp.status.state in [SUCCEEDED_STATE, FAILED_STATE]:
+                  break
+              time.sleep(5)
+
+          if running_mp.status.state != SUCCEEDED_STATE:
+              raise Exception(f'Expected Model Packaging {running_mp.id} to be in {SUCCEEDED_STATE} state')
+
+    - name: deployment
+      inputs:
+        parameters:
+          - name: odahuURL
+          - name: odahuCredentialsSecret
+            default: /api/v1/secrets/odahu-credentials
+          - name: wait_completion
+            default: "true"
+          - name: fromPackagingID
+            default:
+        artifacts:
+          - name: deploymentManifest
+            path: /odahu/deployment.yaml
+      outputs:
+        parameters:
+          - name: deployment_id
+            valueFrom:
+              path: /odahu/deployment_id.txt
+      script:
+        image: odahu/odahu-flow-cli:1.5.0-rc4
+        envFrom:
+          - secretRef:
+              name: odahu-credentials
+        command: [ "python" ]
+        source: |
+          import os
+          import sys
+          import time
+          from odahuflow.sdk.clients.api_aggregated import parse_resources_file_with_one_item
+          from odahuflow.sdk.clients.deployment import ModelDeploymentClient, READY_STATE, FAILED_STATE
+          from odahuflow.sdk.clients.packaging import ModelPackagingClient
+
+          str_to_bool = {'true': True, 'false': False}
+
+          wait_completion_str = '{{inputs.parameters.wait_completion}}'
+          if wait_completion_str not in str_to_bool:
+              raise ValueError(f'wait_completion must be one of {list(str_to_bool.keys())}')
+          wait_completion = str_to_bool[wait_completion_str]
+
+          deployment_manifest_path = '/odahu/deployment.yaml'
+          manifest = parse_resources_file_with_one_item(deployment_manifest_path)
+          deployment_id = manifest.resource_id
+          deployment = manifest.resource
+
+          print('Found resource:')
+          print(deployment)
+
+          fromPackagingID = '{{inputs.parameters.fromPackagingID}}'
+          if fromPackagingID:
+              print(f'Fetching image name from Model Packaging {fromPackagingID}')
+              mp_client = ModelPackagingClient(
+                  base_url='{{inputs.parameters.odahuURL}}',
+                  client_id=os.getenv('client_id'),
+                  client_secret=os.getenv('client_secret'),
+                  issuer_url=os.getenv('issuer_url')
+              )
+              mp = mp_client.get(fromPackagingID)
+
+              for result in mp.status.results:
+                  if result.name == 'image':
+                      deployment.spec.image = result.value
+                      print(f'Image fetched from packaging: {deployment.spec.image}')
+                      break
+
+          client = ModelDeploymentClient(
+              base_url='{{inputs.parameters.odahuURL}}',
+              client_id=os.getenv('client_id'),
+              client_secret=os.getenv('client_secret'),
+              issuer_url=os.getenv('issuer_url')
+          )
+
+          created_md = client.create(deployment)
+          with open('/odahu/deployment_id.txt', 'w') as f:
+              f.write(created_md.id)
+
+          if not wait_completion:
+              sys.exit(0)
+
+          while True:
+              print('cheking status')
+              running_md = client.get(created_md.id)
+              print(f'"{running_md.status.state}", "{READY_STATE}", "{FAILED_STATE}"')
+              if running_md.status.state in [READY_STATE, FAILED_STATE]:
+                  break
+              time.sleep(5)
+
+          if running_md.status.state != READY_STATE:
+              raise Exception(f'Expected Model Deployment {running_md.id} to be in {READY_STATE} state')

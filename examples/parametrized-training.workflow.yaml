@@ -1,0 +1,70 @@
+# This example runs model training in ODAHU. It demonstrates how user can define a training manifest with
+# placeholders which will be replaced with real values provided in Workflow parameters.
+apiVersion: argoproj.io/v1alpha1
+kind: Workflow
+metadata:
+  generateName: wine-argo-
+spec:
+  entrypoint: training-steps
+
+  podGC:
+    strategy: OnWorkflowSuccess
+
+  # This example workflow accepts 3 parameters which are passed to downstream steps or
+  # rendered in template strings. You can define any parameters
+  arguments:
+    parameters:
+      # odahuURL is a mandatory parameter and must be explicitly provided on workflow submission
+      # The parameter is passed to downstream ODAHU steps
+      - name: odahuURL
+        value:
+      # hyperParametersJSON is a mapping (JSON Object) with values of hyper-parameters for training
+      - name: hyperParametersJSON
+        value: '{"alpha": "1.0"}'
+      # dataBucketPath is a path to training data in bucket
+      # It may be useful if new versions of dataset are put to different locations in the same bucket
+      - name: dataBucketPath
+        value: /data/wine-quality.csv
+
+  templates:
+    - name: training-steps
+      steps:
+        # Call to predefined training template from ODAHU WorkflowTemplate
+        - - name: train
+            templateRef:
+              name: odahu
+              template: training
+            # Passing required arguments to training template:
+            # - odahuURL from workflow input arguments
+            # - trainingManifest artifact produced by previous step
+            arguments:
+              parameters:
+                - name: odahuURL
+                  value: "{{ workflow.parameters.odahuURL }}"
+              artifacts:
+                # Notice: an input manifest can be provided as a static inline data
+                - name: trainingManifest
+                  raw:
+                    data: |
+                      kind: ModelTraining
+                      id: {{ workflow.name }}
+                      spec:
+                        model:
+                          name: wine
+                          version: 1.0
+                        toolchain: mlflow
+                        entrypoint: main
+                        workDir: mlflow/sklearn/wine
+                        data:
+                          - connName: models-output
+                            remotePath: {{ workflow.parameters.dataBucketPath }}
+                            localPath: mlflow/sklearn/wine/wine-quality.csv
+                        hyperParameters: {{ workflow.parameters.hyperParametersJSON }}
+                        resources:
+                          limits:
+                            cpu: 4
+                            memory: 4Gi
+                          requests:
+                            cpu: 2
+                            memory: 2Gi
+                        vcsName: odahu-flow-examples

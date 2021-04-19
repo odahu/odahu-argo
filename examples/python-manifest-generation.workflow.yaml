@@ -1,0 +1,199 @@
+# This example runs train-pack-deploy pipeline in ODAHU. It demonstrates the way to dynamically generate Training
+# manifest via arbitrary Python logic and ODAHU Python SDK. This allows to calculate some dynamic values in runtime
+# or fetch them from any side-services.
+apiVersion: argoproj.io/v1alpha1
+kind: Workflow
+metadata:
+  generateName: wine-argo-
+spec:
+  entrypoint: full-pipeline
+
+  podGC:
+    strategy: OnWorkflowSuccess
+
+  # This example workflow accepts 3 parameters
+  arguments:
+    parameters:
+      # odahuURL is a mandatory parameter and must be explicitly provided on workflow submission
+      # The parameter is passed to downstream ODAHU steps
+      - name: odahuURL
+        value:
+      # algorithmVcsRef is a git reference to ML algorithm source code
+      # User may want to modify this to switch a release tag or to test something from feature-branch
+      # Defaults to develop
+      - name: algorithmVcsRef
+        value: develop
+      # dataBucketPath is a path to training data in bucket
+      # It may be useful if new versions of dataset are put to different locations in the same bucket
+      - name: dataBucketPath
+        value: /data/wine-quality.csv
+
+  templates:
+    - name: full-pipeline
+      steps:
+        # Call to user-defined template (see bottom of the file) to generate training manifest
+        - - name: generate-training-manifest
+            template: generate-training-manifest
+            arguments:
+              parameters:
+                - name: bucketPath
+                  value: "{{ workflow.parameters.dataBucketPath }}"
+                - name: vcsRef
+                  value: "{{ workflow.parameters.algorithmVcsRef }}"
+                  
+        # Call to predefined training template from ODAHU WorkflowTemplate 
+        - - name: train
+            templateRef:
+              name: odahu
+              template: training
+            # Passing required arguments to training template:
+            # - odahuURL from workflow input arguments
+            # - trainingManifest artifact produced by previous step
+            arguments:
+              parameters:
+                - name: odahuURL
+                  value: "{{ workflow.parameters.odahuURL }}"
+              artifacts:
+                - name: trainingManifest
+                  from: "{{steps.generate-training-manifest.outputs.artifacts.trainingManifest}}"
+
+        # Call to predefined packaging template from ODAHU WorkflowTemplate
+        - - name: pack
+            templateRef:
+              name: odahu
+              template: packaging
+            arguments:
+              parameters:
+                - name: odahuURL
+                  value: "{{ workflow.parameters.odahuURL }}"
+                # fromTrainingID points to a training that produced a model artifact
+                # if specified "artifactName" field will be overridden by the last artifact of referenced Training
+                - name: fromTrainingID
+                  value: "{{steps.train.outputs.parameters.training_id}}"
+              artifacts:
+                # Notice: an input manifest can be provided as a static inline data
+                - name: packagingManifest
+                  raw:
+                    data: |
+                      id: {{ workflow.name }}
+                      kind: ModelPackaging
+                      spec:
+                        artifactName: "will be overridden because of fromTrainingID"
+                        integrationName: docker-rest
+                        resources:
+                          limits:
+                            cpu: "1.5"
+                            memory: 4Gi
+                          requests:
+                            cpu: "1.5"
+                            memory: 2Gi
+
+        # Call to predefined deployment template from ODAHU WorkflowTemplate
+        - - name: deploy
+            templateRef:
+              name: odahu
+              template: deployment
+            arguments:
+              parameters:
+                - name: odahuURL
+                  value: "{{ workflow.parameters.odahuURL }}"
+                # fromPackagingID points to a packaging that produced a model image
+                # if specified "image" field will be overridden by the result image from referenced Packaging
+                - name: fromPackagingID
+                  value: "{{steps.pack.outputs.parameters.packaging_id}}"
+              artifacts:
+                - name: deploymentManifest
+                  raw:
+                    data: |
+                      id: {{ workflow.name }}
+                      kind: ModelDeployment
+                      spec:
+                        image: "will be overridden because of fromPackagingID"
+                        predictor: odahu-ml-server
+                        minReplicas: 0
+                        maxReplicas: 1
+
+    # Example template that builds training manifest from static Python configuration and 
+    # provided input parameters
+    - name: generate-training-manifest
+      inputs:
+        parameters:
+          - name: bucketPath
+          - name: vcsRef
+      outputs:
+        artifacts:
+          - name: trainingManifest
+            path: /tmp/train.yaml
+      script:
+        image: odahu/odahu-flow-cli:1.5.0-rc4
+        command: [ "python" ]
+        source: |
+          import yaml
+          from odahuflow.sdk.models.model_training import ModelTraining
+          from odahuflow.sdk.models.model_training_spec import ModelTrainingSpec
+          from odahuflow.sdk.models.model_identity import ModelIdentity
+          from odahuflow.sdk.models.resource_requirements import ResourceRequirements
+          from odahuflow.sdk.models.resource_list import ResourceList
+          from odahuflow.sdk.models.data_binding_dir import DataBindingDir
+
+
+          model=ModelIdentity(
+              name='wine-mlflow',
+              version='{{ inputs.parameters.vcsRef }}',
+              artifact_name_template='{{ .Name }}-{{ .Version }}-{{ .RandomUUID }}.zip'
+          )
+
+          input_data_binding = DataBindingDir(
+              conn_name='models-output',
+              local_path='mlflow/sklearn/wine/',
+              remote_path='{{ inputs.parameters.bucketPath }}'
+          )
+
+          resource_request = ResourceList(
+              cpu='2000m',
+              memory='2024Mi',
+          )
+          resource_limit = ResourceList(
+              cpu='4000m',
+              memory='4024Mi',
+          )
+          training_resources = ResourceRequirements(
+              requests=resource_request,
+              limits=resource_limit,
+          )
+
+          train = ModelTraining(
+              id='{{ workflow.name }}',
+              spec=ModelTrainingSpec(
+                  model=model,
+                  toolchain='mlflow',
+
+                  hyper_parameters={'alpha': '1.0'},
+                  work_dir='mlflow/sklearn/wine',
+                  entrypoint='main',
+
+                  vcs_name='odahu-flow-examples',
+                  reference='{{ inputs.parameters.vcsRef }}',
+
+                  data=[input_data_binding],
+
+                  output_connection='models-output',
+
+                  resources=training_resources,
+              )
+          )
+
+          print('Converting ModelTraining to dict...')
+
+          train_dict = train.to_dict()
+          # This is required for historical reasons and will be fixed soon
+          train_dict['kind'] = 'ModelTraining'
+          print(train_dict)
+
+          print('Dumping to yaml...')
+          train_yaml = yaml.safe_dump(train_dict)
+          print(train_yaml)
+
+          print('Saving to file...')
+          with open('/tmp/train.yaml', 'w') as f:
+              f.write(train_yaml)
