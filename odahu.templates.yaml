@@ -31,6 +31,7 @@ spec:
           import os
           import sys
           import time
+          from odahuflow.cli.parsers.training import wait_training_finish
           from odahuflow.sdk.clients.api_aggregated import parse_resources_file_with_one_item
           from odahuflow.sdk.clients.training import ModelTrainingClient, TRAINING_SUCCESS_STATE, TRAINING_FAILED_STATE
 
@@ -62,6 +63,8 @@ spec:
 
           if not wait_completion:
               sys.exit(0)
+
+          wait_training_finish(mt_id=train_id, mt_client=client, wait=True, timeout=60 * 60 * 24 * 7)
 
           while True:
               running_mt = client.get(created_mt.id)
