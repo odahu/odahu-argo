@@ -8,6 +8,8 @@ spec:
       inputs:
         parameters:
           - name: odahuURL
+          - name: docker_tag
+            default: latest
           - name: odahuCredentialsSecret
             default: odahu-credentials
           - name: wait_completion
@@ -22,7 +24,7 @@ spec:
               path: /odahu/training_id.txt
 
       script:
-        image: odahu/odahu-flow-cli:1.5.0-rc4
+        image: odahu/odahu-flow-cli:{{inputs.parameters.docker_tag}}
         envFrom:
           - secretRef:
               name: odahu-credentials
@@ -79,6 +81,8 @@ spec:
       inputs:
         parameters:
           - name: odahuURL
+          - name: docker_tag
+            default: latest
           - name: odahuCredentialsSecret
             default: /api/v1/secrets/odahu-credentials
           - name: wait_completion
@@ -94,7 +98,7 @@ spec:
             valueFrom:
               path: /odahu/packaging_id.txt
       script:
-        image: odahu/odahu-flow-cli:1.5.0-rc4
+        image: odahu/odahu-flow-cli:{{inputs.parameters.docker_tag}}
         envFrom:
           - secretRef:
               name: odahu-credentials
@@ -162,6 +166,8 @@ spec:
       inputs:
         parameters:
           - name: odahuURL
+          - name: docker_tag
+            default: latest
           - name: odahuCredentialsSecret
             default: /api/v1/secrets/odahu-credentials
           - name: wait_completion
@@ -177,7 +183,7 @@ spec:
             valueFrom:
               path: /odahu/deployment_id.txt
       script:
-        image: odahu/odahu-flow-cli:1.5.0-rc4
+        image: odahu/odahu-flow-cli:{{inputs.parameters.docker_tag}}
         envFrom:
           - secretRef:
               name: odahu-credentials
